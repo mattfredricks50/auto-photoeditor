@@ -18,52 +18,17 @@ from tkinter import (Tk, Toplevel, filedialog, StringVar, DoubleVar,
                      BooleanVar, IntVar, ttk, messagebox, Canvas)
 
 import cv2
-import numpy as np
 from PIL import Image, ImageTk
 
-EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
+# All image algorithms are shared with the CLI in photo_core.py
+from photo_core import (EXTS, blur_score, blown_ratio, haze_score,
+                        dehaze, touch_up, haze_action)
+
 THUMB_SIZE = 140
 PREVIEW_MAX = 900
 
 
-# ---------- Image analysis ----------
-
-def blur_score(gray):
-    return cv2.Laplacian(gray, cv2.CV_64F).var()
-
-
-def blown_ratio(gray):
-    total = gray.size
-    blown = np.sum(gray >= 250) / total
-    crushed = np.sum(gray <= 5) / total
-    return max(blown, crushed)
-
-
-def haze_score(bgr):
-    """Higher = hazier. Combines low contrast + low saturation."""
-    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    contrast = gray.std()         # haze flattens contrast
-    saturation = hsv[..., 1].mean()  # haze desaturates
-    # Normalize and invert so 0=clear, 1=hazy
-    c_norm = max(0, 1 - contrast / 60)
-    s_norm = max(0, 1 - saturation / 80)
-    return (c_norm + s_norm) / 2
-
-
-def dehaze(bgr):
-    """Simple but effective: CLAHE on luminance + saturation boost."""
-    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    l = clahe.apply(l)
-    lab = cv2.merge([l, a, b])
-    out = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-    # Bump saturation
-    hsv = cv2.cvtColor(out, cv2.COLOR_BGR2HSV).astype(np.float32)
-    hsv[..., 1] = np.clip(hsv[..., 1] * 1.35, 0, 255)
-    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
-
+# ---------- Thumbnails (UI-only) ----------
 
 def make_thumb(path, size=THUMB_SIZE):
     try:
@@ -150,7 +115,7 @@ class App:
         self.apply_btn = ttk.Button(opt, text="2. Apply moves",
                                     command=self.apply_moves, state="disabled")
         self.apply_btn.pack(side="left", padx=5)
-        self.dehaze_btn = ttk.Button(opt, text="Dehaze folder →/dehazed",
+        self.dehaze_btn = ttk.Button(opt, text="Dehaze + touch-up folder",
                                      command=self.run_dehaze)
         self.dehaze_btn.pack(side="left", padx=15)
         self.stop_btn = ttk.Button(opt, text="Stop", command=self.stop, state="disabled")
@@ -405,25 +370,32 @@ class App:
 
     def _dehaze_thread(self):
         folder = Path(self.folder.get())
-        out_dir = folder / "dehazed"; out_dir.mkdir(exist_ok=True)
+        dehaze_dir = folder / "dehazed"
+        touchup_dir = folder / "touched_up"
         images = sorted([p for p in folder.iterdir() if p.suffix.lower() in EXTS])
         self.set_status(f"Dehazing {len(images)} images…")
-        done = 0
+        n_dehaze = n_touch = 0
         for i, p in enumerate(images):
             if self.stop_flag.is_set():
                 self.set_status("Dehaze stopped."); break
             img = cv2.imread(str(p))
             if img is None:
                 continue
-            h = haze_score(img)
-            # Only process images that look hazy enough to benefit
-            if h > 0.35:
-                out = dehaze(img)
-                cv2.imwrite(str(out_dir / p.name), out)
-                done += 1
+            action = haze_action(haze_score(img))
+            if action == "dehaze":
+                dehaze_dir.mkdir(exist_ok=True)
+                cv2.imwrite(str(dehaze_dir / p.name), dehaze(img))
+                n_dehaze += 1
+            elif action == "touch_up":
+                # Borderline: not hazy enough for a full dehaze, so dehaze + auto levels
+                touchup_dir.mkdir(exist_ok=True)
+                cv2.imwrite(str(touchup_dir / p.name), touch_up(img))
+                n_touch += 1
             self.progress.set(int((i+1) / max(len(images), 1) * 100))
-            self.set_status(f"Dehazing… {i+1}/{len(images)}  (saved {done})")
-        self.set_status(f"Dehaze complete. {done} images saved to {out_dir}.")
+            self.set_status(f"Dehazing… {i+1}/{len(images)}  "
+                            f"(dehazed {n_dehaze}, touched up {n_touch})")
+        self.set_status(f"Dehaze complete. {n_dehaze} dehazed -> {dehaze_dir.name}/, "
+                        f"{n_touch} touched up -> {touchup_dir.name}/.")
         self.root.after(0, lambda: self.scan_btn.config(state="normal"))
         self.root.after(0, lambda: self.dehaze_btn.config(state="normal"))
         self.root.after(0, lambda: self.stop_btn.config(state="disabled"))

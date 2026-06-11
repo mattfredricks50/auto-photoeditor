@@ -52,8 +52,10 @@ Workflow:
 5. **2. Apply moves** — confirms, then moves everything marked *move* into
    `trash/`.
 
-**Dehaze:** click **"Dehaze folder →/dehazed"** to process hazy images and save
-fixed copies into a `dehazed/` subfolder. Originals are untouched.
+**Dehaze + touch-up:** click **"Dehaze + touch-up folder"** to process hazy
+images. Clearly hazy ones get a full dehaze saved to `dehazed/`; borderline ones
+(just under the cutoff) get dehaze **plus** auto contrast/brightness saved to
+`touched_up/`. Originals are untouched.
 
 ### CLI
 
@@ -66,14 +68,16 @@ python cull_photos.py "C:\path\to\photos" --dry-run
 REM Tune sensitivity:
 python cull_photos.py "C:\path\to\photos" --blur 100 --blown 0.40
 
-REM Dehaze hazy images into a 'dehazed' subfolder (instead of culling):
+REM Dehaze pass (instead of culling):
+REM   clearly hazy   -> ./dehazed
+REM   borderline     -> ./touched_up   (dehaze + auto contrast/brightness)
 python cull_photos.py "C:\path\to\photos" --dehaze
-python cull_photos.py "C:\path\to\photos" --dehaze --haze 0.35 --dry-run
+python cull_photos.py "C:\path\to\photos" --dehaze --haze 0.35 --touchup-margin 0.30 --dry-run
 ```
 
-The CLI now has the same detection + dehaze capabilities as the GUI. (The
-GUI's clickable previews and per-row Keep/Move overrides are interactive-only
-and have no CLI equivalent.)
+The CLI and GUI now share all image algorithms (see Architecture below), so
+they always behave identically. The GUI's clickable previews and per-row
+Keep/Move overrides are interactive-only and have no CLI equivalent.
 
 ---
 
@@ -83,7 +87,7 @@ and have no CLI equivalent.)
 |---------------|--------------------------------------------------------------|-------------------------|
 | **Blur**      | Variance of the Laplacian — low variance = soft/blurry image | `score < --blur` (def. 100) |
 | **Blown-out** | Fraction of near-white (≥250) or near-black (≤5) pixels       | `ratio >= --blown` (def. 0.40) |
-| **Haze**      | Low contrast + low saturation (dehaze feature only)          | processed when score > 0.35 |
+| **Haze**      | Low contrast + low saturation (dehaze feature only)          | `> 0.35` dehaze; `> 0.245` touch up |
 
 **Tuning tips:**
 
@@ -96,16 +100,26 @@ and have no CLI equivalent.)
 
 | File                  | Purpose                                          |
 |-----------------------|--------------------------------------------------|
-| `cull_photos_gui.py`  | The GUI app                                      |
-| `cull_photos.py`      | Command-line version                             |
+| `photo_core.py`       | **Shared** image algorithms (scoring + filters)  |
+| `cull_photos_gui.py`  | The GUI app (imports `photo_core`)               |
+| `cull_photos.py`      | Command-line version (imports `photo_core`)      |
 | `install.bat`         | One-time dependency installer                    |
 | `run_gui.bat`         | Launches the GUI with the correct Python         |
 | `requirements.txt`    | Python dependencies                              |
 
+### Architecture
+
+All scoring (`blur_score`, `blown_ratio`, `haze_score`) and all filters
+(`dehaze`, `auto_contrast_brightness`, `touch_up`) live in **`photo_core.py`**.
+Both the CLI and GUI import from it, so there's only one place to change an
+algorithm and both front-ends stay in sync. The `haze_action()` helper there
+decides, per image, whether to fully dehaze, touch up, or leave it alone.
+
 Output folders created next to your photos:
 
 - `trash/` — photos you moved (safe to delete once you've checked them)
-- `dehazed/` — dehazed copies (originals untouched)
+- `dehazed/` — fully dehazed copies (originals untouched)
+- `touched_up/` — borderline images: dehaze + auto contrast/brightness
 
 ---
 
