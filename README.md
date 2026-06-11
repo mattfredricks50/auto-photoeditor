@@ -43,7 +43,9 @@ Workflow:
 1. **Browse** to the folder of photos.
 2. Adjust the **Blur** and **Blown-out** sliders if needed (defaults are a good start).
 3. **1. Scan (preview)** — analyzes every image and lists them with thumbnails.
-   Nothing is moved yet.
+   Nothing is moved yet. **After scanning, you can drag the sliders and the
+   keep/move decisions update live** (it re-thresholds the already-computed
+   scores, so it's instant — no need to re-scan).
 4. **Review** — click any thumbnail for a full-size preview (← / → to flip
    through, Esc to close). Use each row's **Keep** / **Move** buttons to override
    the automatic decision; overridden rows are marked with `*`.
@@ -63,7 +65,15 @@ python cull_photos.py "C:\path\to\photos" --dry-run
 
 REM Tune sensitivity:
 python cull_photos.py "C:\path\to\photos" --blur 100 --blown 0.40
+
+REM Dehaze hazy images into a 'dehazed' subfolder (instead of culling):
+python cull_photos.py "C:\path\to\photos" --dehaze
+python cull_photos.py "C:\path\to\photos" --dehaze --haze 0.35 --dry-run
 ```
+
+The CLI now has the same detection + dehaze capabilities as the GUI. (The
+GUI's clickable previews and per-row Keep/Move overrides are interactive-only
+and have no CLI equivalent.)
 
 ---
 
