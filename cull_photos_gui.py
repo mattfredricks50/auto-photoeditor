@@ -78,12 +78,15 @@ def make_thumb(path, size=THUMB_SIZE):
 
 class Row:
     """One image row in the results list."""
-    def __init__(self, path, flagged, detail):
+    def __init__(self, path, flagged, detail, b=None, x=None, readable=True):
         self.path = path
         self.flagged = flagged       # AI's decision
         self.override_keep = False   # user said keep this flagged one
         self.override_move = False   # user said move this unflagged one
         self.detail = detail
+        self.b = b                   # cached blur score (None if unreadable)
+        self.x = x                   # cached blown ratio
+        self.readable = readable
 
     @property
     def will_move(self):
@@ -130,13 +133,13 @@ class App:
         ttk.Label(sld, text="Blur (lower = stricter):").grid(row=0, column=0, sticky="w")
         self.blur_lbl = ttk.Label(sld, text="100"); self.blur_lbl.grid(row=0, column=2, padx=5)
         ttk.Scale(sld, from_=10, to=500, variable=self.blur, orient="horizontal",
-                  length=400, command=lambda v: self.blur_lbl.config(text=f"{float(v):.0f}")
+                  length=400, command=self._on_blur
                   ).grid(row=0, column=1, sticky="ew", padx=5)
 
         ttk.Label(sld, text="Blown-out (% saturated):").grid(row=1, column=0, sticky="w", pady=(8,0))
         self.blown_lbl = ttk.Label(sld, text="40%"); self.blown_lbl.grid(row=1, column=2, padx=5, pady=(8,0))
         ttk.Scale(sld, from_=0.10, to=0.90, variable=self.blown, orient="horizontal",
-                  length=400, command=lambda v: self.blown_lbl.config(text=f"{float(v)*100:.0f}%")
+                  length=400, command=self._on_blown
                   ).grid(row=1, column=1, sticky="ew", padx=5, pady=(8,0))
         sld.columnconfigure(1, weight=1)
 
@@ -174,6 +177,14 @@ class App:
                              lambda e: self.canvas.yview_scroll(int(-e.delta/120), "units"))
 
     # ----- Helpers -----
+
+    def _on_blur(self, v):
+        self.blur_lbl.config(text=f"{float(v):.0f}")
+        self.recompute()
+
+    def _on_blown(self, v):
+        self.blown_lbl.config(text=f"{float(v)*100:.0f}%")
+        self.recompute()
 
     def pick_folder(self):
         f = filedialog.askdirectory()
@@ -257,6 +268,7 @@ class App:
         frame.columnconfigure(1, weight=1)
 
         row._status_lbl = status_lbl
+        row._detail_lbl = detail_lbl
         row._keep_btn = keep_btn
         row._move_btn = move_btn
         self.refresh_row(idx)
@@ -270,6 +282,32 @@ class App:
         if (row.flagged and row.override_keep) or (not row.flagged and row.override_move):
             txt += " *"  # asterisk = overridden
         row._status_lbl.config(text=txt, foreground=color)
+
+    def recompute(self):
+        """Re-evaluate every scanned row against the current slider values.
+
+        Uses the cached blur/blown scores, so this is instant — no images are
+        re-read. User Keep/Move overrides are preserved. Called live while the
+        sliders move."""
+        if not self.rows:
+            return
+        blur_thr = self.blur.get()
+        blown_thr = self.blown.get()
+        flagged_count = 0
+        for idx, row in enumerate(self.rows):
+            if not row.readable:
+                continue
+            reasons = []
+            if row.b < blur_thr: reasons.append(f"blurry({row.b:.0f})")
+            if row.x >= blown_thr: reasons.append(f"blown({row.x*100:.0f}%)")
+            row.flagged = bool(reasons)
+            if row.flagged: flagged_count += 1
+            row.detail = f"{row.path.name}  blur={row.b:.0f} blown={row.x*100:.0f}%"
+            if reasons: row.detail += f"  [{', '.join(reasons)}]"
+            row._detail_lbl.config(text=row.detail)
+            self.refresh_row(idx)
+        self.set_status(f"{flagged_count} flagged at current thresholds. "
+                        f"Adjust sliders freely, then click Apply.")
 
     def toggle(self, idx, action):
         row = self.rows[idx]
@@ -309,7 +347,7 @@ class App:
 
             img = cv2.imread(str(p))
             if img is None:
-                row = Row(p, False, f"{p.name}  (unreadable)")
+                row = Row(p, False, f"{p.name}  (unreadable)", readable=False)
             else:
                 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                 b = blur_score(gray)
@@ -321,7 +359,7 @@ class App:
                 if flagged: flagged_count += 1
                 detail = f"{p.name}  blur={b:.0f} blown={x*100:.0f}%"
                 if reasons: detail += f"  [{', '.join(reasons)}]"
-                row = Row(p, flagged, detail)
+                row = Row(p, flagged, detail, b=b, x=x)
 
             self.root.after(0, self.add_row, row)
             self.progress.set(int((i+1) / max(len(images), 1) * 100))
